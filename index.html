@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Compartilhar Tela</title>
-<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="peerjs.min.js"></script>
 <style>
 :root{--bg:#0b0d10;--panel:#14171c;--line:#23272f;--text:#e8eaed;--muted:#8b919c;--accent:#4f8cff;--ok:#3ecf8e;--bad:#ff5c5c}
 *{box-sizing:border-box}
@@ -49,6 +49,10 @@ input[type=range]{width:110px;accent-color:var(--accent)}
 <script>
 const $ = s => document.querySelector(s);
 const room = new URLSearchParams(location.search).get('sala');
+const ICE = [
+  { urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] }
+];
+const PEER_OPTS = { config: { iceServers: ICE } };
 const store = {
   get(k){ try { return localStorage.getItem(k); } catch { return null; } },
   set(k, v){ try { localStorage.setItem(k, v); } catch {} }
@@ -246,7 +250,8 @@ function host(){
   }
 
   function connectPeer(){
-    peer = new Peer(id);
+    peer = new Peer(id, PEER_OPTS);
+    setTimeout(() => { if (!peer.open) status('Não consegui falar com o servidor de conexão. Confira a internet ou o antivírus e recarregue a página.', 'bad'); }, 12000);
     peer.on('open', () => count());
     peer.on('connection', conn => {
       conn.on('open', () => {
@@ -484,32 +489,57 @@ function viewer(){
   stage.addEventListener('touchstart', wake);
 
   if (!room) return;
-  const peer = new Peer();
-  let conn = null, call = null, cfg = {}, retry = null, last = null;
+  if (typeof Peer === 'undefined'){ setStatus('Não consegui carregar o site. Recarregue com Ctrl+F5.', 'bad'); overlay(); return; }
+  let peer = null, conn = null, call = null, cfg = {}, retry = null, last = null, openTimer = null, joinTimer = null;
+  const say = (text, cls) => { if (!live){ setStatus(text, cls); overlay(); } };
 
   const schedule = () => { clearTimeout(retry); retry = setTimeout(connect, 3000); };
   function connect(){
-    if (peer.destroyed) return;
+    if (!peer || peer.destroyed) return;
     if (peer.disconnected){ peer.reconnect(); return; }
     if (conn) conn.close();
+    say('Entrando na sala.', 'on');
     const c = peer.connect(room, { reliable: true });
     conn = c;
-    c.on('open', () => { clearTimeout(retry); if (!live){ setStatus('Conectado. Aguardando a transmissão começar.', 'on'); overlay(); } });
+    clearTimeout(joinTimer);
+    joinTimer = setTimeout(() => {
+      if (conn !== c || c.open) return;
+      say('Não deu para conectar no PC de quem transmite. Tentando de novo.', 'bad');
+      schedule();
+    }, 15000);
+    c.on('open', () => { clearTimeout(retry); clearTimeout(joinTimer); say('Conectado. Aguardando a transmissão começar.', 'on'); });
     c.on('data', d => {
       if (!d || typeof d !== 'object') return;
       if (d.t === 'cfg') cfg = d;
-      if (d.t === 'stopped'){ live = false; video.srcObject = null; setStatus('A transmissão está parada. Aguardando.', 'on'); overlay(); }
+      if (d.t === 'stopped'){ live = false; video.srcObject = null; say('A transmissão está parada. Aguardando.', 'on'); }
     });
-    c.on('close', () => { if (conn !== c) return; live = false; setStatus('Desconectado. Tentando de novo.', 'bad'); overlay(); schedule(); });
+    c.on('close', () => { if (conn !== c) return; clearTimeout(joinTimer); live = false; say('Desconectado. Tentando de novo.', 'bad'); schedule(); });
   }
 
-  peer.on('open', connect);
-  peer.on('disconnected', () => setTimeout(() => peer.destroyed || peer.reconnect(), 1500));
-  peer.on('error', e => {
-    if (e.type === 'peer-unavailable'){ setStatus('A sala ainda não está aberta. Tentando de novo.', 'bad'); overlay(); schedule(); }
-    else { setStatus('Erro: ' + e.type + '. Tentando de novo.', 'bad'); overlay(); schedule(); }
-  });
-  peer.on('call', c => {
+  function startPeer(){
+    if (peer) peer.destroy();
+    say('Conectando ao servidor.', '');
+    const p = new Peer(PEER_OPTS);
+    peer = p;
+    clearTimeout(openTimer);
+    openTimer = setTimeout(() => {
+      if (peer !== p || p.open) return;
+      say('Não consegui falar com o servidor de conexão. Tentando de novo.', 'bad');
+      startPeer();
+    }, 12000);
+    p.on('open', () => { clearTimeout(openTimer); connect(); });
+    p.on('disconnected', () => setTimeout(() => p.destroyed || p.reconnect(), 1500));
+    p.on('error', e => {
+      if (peer !== p) return;
+      if (e.type === 'peer-unavailable') say('A sala ainda não está aberta. Tentando de novo.', 'bad');
+      else say('Erro: ' + e.type + '. Tentando de novo.', 'bad');
+      if (['network', 'server-error', 'socket-error', 'socket-closed', 'browser-incompatible'].includes(e.type)){ clearTimeout(openTimer); setTimeout(startPeer, 3000); }
+      else schedule();
+    });
+    p.on('call', onCall);
+  }
+
+  function onCall(c){
     if (call && call !== c) call.close();
     call = c;
     last = null;
@@ -526,7 +556,9 @@ function viewer(){
       if (pc) pc.getReceivers().forEach(r => { try { r.jitterBufferTarget = 0; } catch {} });
     });
     c.on('close', () => { if (call === c){ call = null; } });
-  });
+  }
+
+  startPeer();
 
   setInterval(async () => {
     const pc = call && call.peerConnection;
