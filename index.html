@@ -50,7 +50,8 @@ input[type=range]{width:110px;accent-color:var(--accent)}
 const $ = s => document.querySelector(s);
 const room = new URLSearchParams(location.search).get('sala');
 const ICE = [
-  { urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] }
+  { urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] },
+  { urls: ['turn:179.199.142.194:3478?transport=udp', 'turn:179.199.142.194:3478?transport=tcp'], username: 'tela', credential: '8b310b0fb693b63f4163ed872a243f18' }
 ];
 const PEER_OPTS = { config: { iceServers: ICE } };
 const store = {
