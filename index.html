@@ -147,6 +147,13 @@ function host(){
             <option value="AV1">AV1</option>
           </select>
         </label>
+        <label>Áudio
+          <select id="asrc">
+            <option value="display">Do compartilhamento</option>
+            <option value="none">Sem áudio</option>
+            <option value="load">Escolher dispositivo...</option>
+          </select>
+        </label>
         <div style="flex:1"></div>
         <button class="btn" id="share">Compartilhar tela</button>
         <button class="btn danger" id="stop" hidden>Parar</button>
@@ -159,12 +166,15 @@ function host(){
     </div>
     <div class="card">
       <details>
-        <summary>Como transmitir o som sem o áudio da call</summary>
+        <summary>Tela inteira com som, sem o áudio da call</summary>
         <ol>
-          <li><b>Aba do Chrome:</b> escolha a aba <b>Guia do Chrome</b> e marque <b>Compartilhar áudio da guia</b>. Só o som daquela aba vai junto, a call fica de fora.</li>
-          <li><b>Tela inteira (jogo, programa):</b> escolha <b>Tela inteira</b> e marque <b>Compartilhar áudio do sistema</b>. O Chrome captura o dispositivo de saída <b>padrão</b> do Windows, então o Discord precisa sair em outro dispositivo.</li>
-          <li>No Discord: <b>Configurações &gt; Voz e vídeo &gt; Dispositivo de saída</b>, escolha o seu fone pelo nome (não deixe em Padrão).</li>
-          <li>No Windows, deixe como saída padrão um dispositivo diferente do fone do Discord. Se você só tem um fone, instale o <b>VB-CABLE</b>, coloque o <b>CABLE Input</b> como saída padrão e em <b>Painel de som &gt; Gravação &gt; CABLE Output &gt; Propriedades &gt; Escutar</b> marque <b>Escutar este dispositivo</b> com o seu fone. Assim você ouve tudo e só o som do PC vai para a transmissão.</li>
+          <li>Na tela inteira, o áudio do sistema do Chrome pega o som de todos os programas, inclusive o Discord. Por isso o som vai por um cabo virtual.</li>
+          <li>Instale o <b>VB-CABLE</b> (vb-audio.com/Cable) e reinicie o PC.</li>
+          <li>No Discord: <b>Configurações &gt; Voz e vídeo &gt; Dispositivo de saída</b>, escolha o seu fone ou monitor pelo nome (não deixe em Padrão do Windows).</li>
+          <li>No Windows, coloque <b>CABLE Input</b> como dispositivo de saída padrão. Assim todo o som do PC vai para o cabo, menos o Discord.</li>
+          <li>Para continuar ouvindo: <b>Painel de controle de som &gt; Gravação &gt; CABLE Output &gt; Propriedades &gt; Escutar</b>, marque <b>Escutar este dispositivo</b> e escolha o mesmo dispositivo que está no Discord.</li>
+          <li>Aqui no site, em <b>Áudio</b>, clique em <b>Escolher dispositivo</b> e selecione <b>CABLE Output</b>. No seletor de tela do Chrome, deixe o áudio do sistema desmarcado.</li>
+          <li>Só vai compartilhar uma aba do Chrome? Aí basta deixar <b>Do compartilhamento</b> e marcar <b>Compartilhar áudio da guia</b>.</li>
         </ol>
       </details>
     </div>
@@ -266,28 +276,94 @@ function host(){
     });
   }
 
+  const asrc = $('#asrc');
+  const RAW = { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: { ideal: 2 }, sampleRate: { ideal: 48000 } };
+
+  async function fillDevices(){
+    const list = (await navigator.mediaDevices.enumerateDevices())
+      .filter(d => d.kind === 'audioinput' && d.label && d.deviceId !== 'default' && d.deviceId !== 'communications');
+    if (!list.length) return [];
+    asrc.querySelectorAll('option[data-dev], option[value=load]').forEach(o => o.remove());
+    for (const d of list){
+      const o = document.createElement('option');
+      o.value = 'dev:' + d.deviceId;
+      o.textContent = d.label;
+      o.dataset.dev = '1';
+      asrc.appendChild(o);
+    }
+    return list;
+  }
+
+  async function pickDevice(){
+    try { (await navigator.mediaDevices.getUserMedia({ audio: true })).getTracks().forEach(t => t.stop()); }
+    catch { asrc.value = 'display'; setAudioInfo('Sem permissão para listar os dispositivos de áudio.', false); return; }
+    const list = await fillDevices();
+    const cable = list.find(d => /CABLE Output/i.test(d.label));
+    asrc.value = cable ? 'dev:' + cable.deviceId : list.length ? 'dev:' + list[0].deviceId : 'display';
+  }
+
+  async function deviceTrack(){
+    if (!asrc.value.startsWith('dev:')) return null;
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({ audio: { ...RAW, deviceId: { exact: asrc.value.slice(4) } } });
+      return s.getAudioTracks()[0];
+    } catch { return null; }
+  }
+
+  function setAudioInfo(text, ok){
+    $('#audio').textContent = text;
+    $('#audio').style.color = ok ? 'var(--ok)' : 'var(--bad)';
+  }
+
+  function showAudio(){
+    const a = stream && stream.getAudioTracks()[0];
+    if (a) a.contentHint = 'music';
+    if (asrc.value === 'none') setAudioInfo('Sem áudio.', true);
+    else if (a) setAudioInfo(asrc.value === 'display' ? 'Com áudio do compartilhamento.' : 'Com áudio: ' + asrc.selectedOptions[0].textContent + '.', true);
+    else setAudioInfo(asrc.value === 'display' ? 'Sem áudio: marque a opção de compartilhar áudio no seletor.' : 'Não consegui abrir o dispositivo de áudio.', false);
+  }
+
+  fillDevices().then(() => {
+    const saved = store.get('tela-asrc');
+    if (saved && [...asrc.options].some(o => o.value === saved)) asrc.value = saved;
+  }).catch(() => {});
+
+  asrc.onchange = async () => {
+    if (asrc.value === 'load') await pickDevice();
+    store.set('tela-asrc', asrc.value);
+    if (!stream) return;
+    if (asrc.value === 'display'){ setAudioInfo('Clique em Trocar tela para pegar o áudio do compartilhamento.', false); return; }
+    const v = stream.getVideoTracks()[0];
+    stream.getAudioTracks().forEach(t => t.stop());
+    const a = await deviceTrack();
+    stream = new MediaStream(a ? [v, a] : [v]);
+    $('#preview').srcObject = stream;
+    showAudio();
+    for (const pid of viewers.keys()) callViewer(pid);
+  };
+
   async function share(){
     let s;
+    const fromDisplay = asrc.value === 'display';
     try {
       const fps = +$('#fps').value;
       s = await navigator.mediaDevices.getDisplayMedia({
         video: { frameRate: { ideal: fps, max: fps } },
-        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: { ideal: 2 }, sampleRate: { ideal: 48000 }, suppressLocalAudioPlayback: false },
-        systemAudio: 'include',
+        audio: fromDisplay ? { ...RAW, suppressLocalAudioPlayback: false } : false,
+        systemAudio: fromDisplay ? 'include' : 'exclude',
         selfBrowserSurface: 'exclude',
         surfaceSwitching: 'include',
         monitorTypeSurfaces: 'include'
       });
     } catch { return; }
+    const a = await deviceTrack();
+    if (a) s.addTrack(a);
     if (stream) stream.getTracks().forEach(t => t.stop());
     stream = s;
     const v = s.getVideoTracks()[0];
     v.contentHint = $('#mode').value;
     v.onended = stop;
-    const a = s.getAudioTracks()[0];
-    if (a) a.contentHint = 'music';
-    $('#audio').textContent = a ? 'Com áudio.' : 'Sem áudio: marque a opção de compartilhar áudio no seletor.';
-    $('#audio').style.color = a ? 'var(--ok)' : 'var(--bad)';
+    showAudio();
     $('#preview').srcObject = s;
     $('#share').textContent = 'Trocar tela';
     $('#stop').hidden = false;
